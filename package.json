@@ -1,0 +1,19 @@
+{
+  "name": "chess-elo-server",
+  "version": "1.0.0",
+  "description": "ELO rating backend for the Unity chess game",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
+  }
+}
