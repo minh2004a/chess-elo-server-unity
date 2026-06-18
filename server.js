@@ -175,8 +175,8 @@ app.post('/match/report', async (req, res) => {
       const m = existing.rows[0];
       return res.json({
         alreadyProcessed: true,
-        white: { id: m.white_id, ratingAfter: m.white_rating_after },
-        black: { id: m.black_id, ratingAfter: m.black_rating_after },
+        white: { id: m.white_id, ratingBefore: m.white_rating_before, ratingAfter: m.white_rating_after },
+        black: { id: m.black_id, ratingBefore: m.black_rating_before, ratingAfter: m.black_rating_after },
       });
     }
 
