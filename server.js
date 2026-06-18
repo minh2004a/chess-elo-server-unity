@@ -156,6 +156,50 @@ app.get('/player/:id', async (req, res) => {
   }
 });
 
+// ── Recent match history for a player (from their perspective) ─────────
+app.get('/player/:id/matches', async (req, res) => {
+  const id = req.params.id;
+  const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
+  try {
+    const r = await pool.query(
+      `SELECT m.match_id, m.created_at, m.result, m.white_id, m.black_id,
+              m.white_rating_before, m.white_rating_after,
+              m.black_rating_before, m.black_rating_after,
+              pw.display_name AS white_name, pb.display_name AS black_name
+       FROM matches m
+       JOIN players pw ON pw.id = m.white_id
+       JOIN players pb ON pb.id = m.black_id
+       WHERE m.white_id = $1 OR m.black_id = $1
+       ORDER BY m.created_at DESC
+       LIMIT $2`,
+      [id, limit]
+    );
+    const matches = r.rows.map((m) => {
+      const isWhite = m.white_id === id;
+      const before = isWhite ? m.white_rating_before : m.black_rating_before;
+      const after  = isWhite ? m.white_rating_after  : m.black_rating_after;
+      let outcome;
+      if (m.result === 'draw') outcome = 'draw';
+      else if ((m.result === 'white_win') === isWhite) outcome = 'win';
+      else outcome = 'loss';
+      return {
+        matchId: m.match_id,
+        playedAt: m.created_at,
+        opponentName: isWhite ? m.black_name : m.white_name,
+        side: isWhite ? 'white' : 'black',
+        outcome,
+        ratingBefore: before,
+        ratingAfter: after,
+        delta: after - before,
+      };
+    });
+    res.json({ matches });
+  } catch (e) {
+    console.error('[player/matches]', e);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
 // ── Report a match: server computes ELO; idempotent by matchId ─────────
 app.post('/match/report', async (req, res) => {
   const { matchId, whiteId, blackId, result } = req.body || {};
