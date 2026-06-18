@@ -71,11 +71,11 @@ app.post('/auth/anon', async (req, res) => {
   }
 });
 
-// ── Register: link a username+password to a player ─────────────────────
-// If deviceId maps to an existing (anon) player, that player is UPGRADED
-// (rating kept). Otherwise a fresh player is created.
+// ── Register: create a new account (username+password) ─────────────────
+// Each account is its OWN player starting at rating 1000 — independent of
+// the device's anonymous rating and of any other account.
 app.post('/auth/register', async (req, res) => {
-  const { deviceId, username, password } = req.body || {};
+  const { username, password } = req.body || {};
   const err = validateCredentials(username, password);
   if (err) return res.status(400).json({ error: err });
   const uname = username.trim();
@@ -95,25 +95,11 @@ app.post('/auth/register', async (req, res) => {
       return res.status(409).json({ error: 'username already taken' });
     }
 
-    // Reuse the device's anon player (keep rating) if present, else create one.
-    let playerId = null;
-    if (deviceId && typeof deviceId === 'string') {
-      const dev = await client.query(
-        'SELECT player_id FROM auth_identities WHERE provider=$1 AND external_id=$2',
-        ['device', deviceId]
-      );
-      if (dev.rows.length > 0) playerId = dev.rows[0].player_id;
-    }
-    if (!playerId) {
-      const ins = await client.query(
-        'INSERT INTO players(display_name) VALUES($1) RETURNING id', [uname]
-      );
-      playerId = ins.rows[0].id;
-    } else {
-      await client.query(
-        'UPDATE players SET display_name=$1, updated_at=now() WHERE id=$2', [uname, playerId]
-      );
-    }
+    // Fresh player for this account (starts at 1000 via schema default).
+    const ins = await client.query(
+      'INSERT INTO players(display_name) VALUES($1) RETURNING id', [uname]
+    );
+    const playerId = ins.rows[0].id;
 
     const hash = await bcrypt.hash(password, 10);
     await client.query(
