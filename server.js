@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const bcrypt = require('bcryptjs');
 const { pool, initSchema } = require('./db');
 const { computeElo } = require('./elo');
 
@@ -9,6 +10,17 @@ app.use(cors());
 app.use(express.json());
 
 const PLAYER_COLS = 'id, display_name, rating, games, wins, losses, draws';
+
+// Username/password login uses provider='userpass'; external_id = lowercased username.
+const USERPASS = 'userpass';
+
+function validateCredentials(username, password) {
+  if (!username || typeof username !== 'string' || !/^[A-Za-z0-9_]{3,20}$/.test(username))
+    return 'username must be 3-20 chars (letters, numbers, underscore)';
+  if (!password || typeof password !== 'string' || password.length < 4)
+    return 'password must be at least 4 characters';
+  return null;
+}
 
 // Health check (Render pings this).
 app.get('/health', (req, res) => res.json({ ok: true }));
@@ -56,6 +68,93 @@ app.post('/auth/anon', async (req, res) => {
     res.status(500).json({ error: 'server error' });
   } finally {
     client.release();
+  }
+});
+
+// ── Register: link a username+password to a player ─────────────────────
+// If deviceId maps to an existing (anon) player, that player is UPGRADED
+// (rating kept). Otherwise a fresh player is created.
+app.post('/auth/register', async (req, res) => {
+  const { deviceId, username, password } = req.body || {};
+  const err = validateCredentials(username, password);
+  if (err) return res.status(400).json({ error: err });
+  const uname = username.trim();
+  const key = uname.toLowerCase();
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Username already taken?
+    const taken = await client.query(
+      'SELECT 1 FROM auth_identities WHERE provider=$1 AND external_id=$2',
+      [USERPASS, key]
+    );
+    if (taken.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'username already taken' });
+    }
+
+    // Reuse the device's anon player (keep rating) if present, else create one.
+    let playerId = null;
+    if (deviceId && typeof deviceId === 'string') {
+      const dev = await client.query(
+        'SELECT player_id FROM auth_identities WHERE provider=$1 AND external_id=$2',
+        ['device', deviceId]
+      );
+      if (dev.rows.length > 0) playerId = dev.rows[0].player_id;
+    }
+    if (!playerId) {
+      const ins = await client.query(
+        'INSERT INTO players(display_name) VALUES($1) RETURNING id', [uname]
+      );
+      playerId = ins.rows[0].id;
+    } else {
+      await client.query(
+        'UPDATE players SET display_name=$1, updated_at=now() WHERE id=$2', [uname, playerId]
+      );
+    }
+
+    const hash = await bcrypt.hash(password, 10);
+    await client.query(
+      'INSERT INTO auth_identities(provider, external_id, password_hash, player_id) VALUES($1,$2,$3,$4)',
+      [USERPASS, key, hash, playerId]
+    );
+
+    const p = await client.query(`SELECT ${PLAYER_COLS} FROM players WHERE id=$1`, [playerId]);
+    await client.query('COMMIT');
+    res.json(p.rows[0]);
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('[auth/register]', e);
+    res.status(500).json({ error: 'server error' });
+  } finally {
+    client.release();
+  }
+});
+
+// ── Login: verify username+password, return the player ─────────────────
+app.post('/auth/login', async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: 'username and password required' });
+  const key = String(username).trim().toLowerCase();
+
+  try {
+    const r = await pool.query(
+      'SELECT player_id, password_hash FROM auth_identities WHERE provider=$1 AND external_id=$2',
+      [USERPASS, key]
+    );
+    if (r.rows.length === 0) return res.status(401).json({ error: 'wrong username or password' });
+
+    const ok = await bcrypt.compare(String(password), r.rows[0].password_hash || '');
+    if (!ok) return res.status(401).json({ error: 'wrong username or password' });
+
+    const p = await pool.query(`SELECT ${PLAYER_COLS} FROM players WHERE id=$1`, [r.rows[0].player_id]);
+    if (p.rows.length === 0) return res.status(404).json({ error: 'player not found' });
+    res.json(p.rows[0]);
+  } catch (e) {
+    console.error('[auth/login]', e);
+    res.status(500).json({ error: 'server error' });
   }
 });
 
